@@ -18,7 +18,8 @@ from thumbor.utils import logger
 
 # Results Storage
 class Storage(BaseStorage):
-    PATH_FORMAT_VERSION = 'v2'
+    PATH_FORMAT_VERSION = 'v3'
+    PATH_FORMAT_VERSION_LEGACY = 'v2'
     bucket = None
 
     def __init__(self, context, shared_client=True):
@@ -51,12 +52,9 @@ class Storage(BaseStorage):
 
     def get(self):
         path = self.context.request.url
-        file_abspath = self._normalize_path(path)
-        logger.debug("[RESULT_STORAGE] getting from %s" % file_abspath)
+        blob = self._get_blob(path)
 
-        bucket = self._get_bucket()
-        blob = bucket.get_blob(file_abspath)
-        if not blob or self._is_expired(blob):
+        if not blob:
             return None
 
         try:
@@ -69,17 +67,35 @@ class Storage(BaseStorage):
 
     def last_updated(self):
         path = self.context.request.url
+        blob = self._get_blob(path)
+
+        if not blob:
+            return True
+
+        return blob.updated
+
+    def _get_blob(self, path):
         file_abspath = self._normalize_path(path)
         logger.debug("[RESULT_STORAGE] getting from %s" % file_abspath)
 
         bucket = self._get_bucket()
         blob = bucket.get_blob(file_abspath)
-
         if not blob or self._is_expired(blob):
             logger.debug("[RESULT_STORAGE] image not found at %s" % file_abspath)
-            return True
-
-        return blob.updated
+            file_abspath_legacy = self._normalize_path_legacy(path)
+            logger.debug("[RESULT_STORAGE] getting from %s" % file_abspath_legacy)
+            blob = bucket.get_blob(file_abspath_legacy)
+            if not blob or self._is_expired(blob):
+                logger.debug("[RESULT_STORAGE] image not found at %s" % file_abspath_legacy)
+                return None
+            self.put(blob.download_as_string())
+            logger.debug("[RESULT_STORAGE] deleting from %s" % file_abspath_legacy)
+            blob.delete()
+            logger.debug("[RESULT_STORAGE] getting from %s" % file_abspath)
+            blob = bucket.get_blob(file_abspath)
+            if not blob or self._is_expired(blob):
+                return None
+        return blob
 
     @property
     def is_auto_webp(self):
@@ -98,6 +114,16 @@ class Storage(BaseStorage):
 
     def _normalize_path(self, path):
         path_segments = [self.context.config.get('RESULT_STORAGE_CLOUD_STORAGE_ROOT_PATH','thumbor/').rstrip('/'), Storage.PATH_FORMAT_VERSION, ]
+        if self.is_auto_webp:
+            path_segments.append("webp")
+
+        path_segments.extend([ re.sub("^/[^/]{28}/", "/", path, 1).lstrip('/'), ])
+
+        normalized_path = os.path.join(*path_segments).replace('http://', '')
+        return normalized_path
+
+    def _normalize_path_legacy(self, path):
+        path_segments = [self.context.config.get('RESULT_STORAGE_CLOUD_STORAGE_ROOT_PATH','thumbor/').rstrip('/'), Storage.PATH_FORMAT_VERSION_LEGACY, ]
         if self.is_auto_webp:
             path_segments.append("webp")
 
